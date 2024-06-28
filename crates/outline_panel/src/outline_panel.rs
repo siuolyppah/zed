@@ -28,7 +28,7 @@ use gpui::{
 };
 use itertools::Itertools;
 use language::{BufferId, BufferSnapshot, OffsetRangeExt, OutlineItem};
-use menu::{SelectFirst, SelectLast, SelectNext, SelectPrev};
+use menu::{Cancel, SelectFirst, SelectLast, SelectNext, SelectPrev};
 
 use outline_panel_settings::{OutlinePanelDockPosition, OutlinePanelSettings};
 use project::{File, Fs, Item, Project};
@@ -40,7 +40,7 @@ use workspace::{
     item::ItemHandle,
     ui::{
         h_flex, v_flex, ActiveTheme, Color, ContextMenu, FluentBuilder, Icon, IconName, IconSize,
-        Label, LabelCommon, ListItem, Selectable, StyledTypography,
+        Label, LabelCommon, ListItem, Selectable, StyledExt, StyledTypography,
     },
     OpenInTerminal, Workspace,
 };
@@ -89,6 +89,7 @@ pub struct OutlinePanel {
     outline_fetch_tasks: HashMap<(BufferId, ExcerptId), Task<()>>,
     excerpts: HashMap<BufferId, HashMap<ExcerptId, Excerpt>>,
     cached_entries_with_depth: Option<Vec<(usize, EntryOwned)>>,
+    filter_editor: View<Editor>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -324,6 +325,29 @@ impl OutlinePanel {
     fn new(workspace: &mut Workspace, cx: &mut ViewContext<Workspace>) -> View<Self> {
         let project = workspace.project().clone();
         let outline_panel = cx.new_view(|cx| {
+            let filter_editor = cx.new_view(|cx| {
+                let mut editor = Editor::single_line(cx);
+                editor.set_placeholder_text("Filter...", cx);
+                editor
+            });
+            let filter_update_subscription =
+                cx.subscribe(&filter_editor, |outline_panel: &mut Self, _, event, cx| {
+                    if let editor::EditorEvent::BufferEdited = event {
+                        dbg!("TODO kb");
+                        // let query = editor.filter_editor.read(cx).text(cx);
+                        // if !query.is_empty() {
+                        //     editor.selection.take();
+                        // editor
+                        // this.update_entries(true, cx);
+                        // if !query.is_empty() {
+                        //     editor.selection = editor
+                        //         .entries
+                        //         .iter()
+                        //         .position(|entry| !matches!(entry, ListEntry::Header(_)));
+                        // }
+                    }
+                });
+
             let focus_handle = cx.focus_handle();
             let focus_subscription = cx.on_focus(&focus_handle, Self::focus_in);
             let workspace_subscription = cx.subscribe(
@@ -374,6 +398,7 @@ impl OutlinePanel {
                 fs: workspace.app_state().fs.clone(),
                 scroll_handle: UniformListScrollHandle::new(),
                 focus_handle,
+                filter_editor,
                 fs_entries: Vec::new(),
                 fs_entries_depth: HashMap::default(),
                 collapsed_entries: HashSet::default(),
@@ -393,6 +418,7 @@ impl OutlinePanel {
                     icons_subscription,
                     focus_subscription,
                     workspace_subscription,
+                    filter_update_subscription,
                 ],
             };
             if let Some(editor) = workspace
@@ -510,6 +536,23 @@ impl OutlinePanel {
     fn open(&mut self, _: &Open, cx: &mut ViewContext<Self>) {
         if let Some(selected_entry) = self.selected_entry.clone() {
             self.open_entry(&selected_entry, cx);
+        }
+    }
+
+    fn cancel(&mut self, _: &Cancel, cx: &mut ViewContext<Self>) {
+        if self.filter_editor.focus_handle(cx).is_focused(cx) {
+            self.filter_editor.update(cx, |editor, cx| {
+                if editor.buffer().read(cx).len(cx) > 0 {
+                    editor.set_text("", cx);
+                }
+            });
+        } else {
+            cx.focus_view(&self.filter_editor);
+        }
+
+        if self.context_menu.is_some() {
+            self.context_menu.take();
+            cx.notify();
         }
     }
 
@@ -1954,6 +1997,7 @@ impl OutlinePanel {
                     if new_selected_entry.is_some() {
                         outline_panel.selected_entry = new_selected_entry;
                     }
+                    // TODO kb need to fetch them all, for filtering
                     if prefetch {
                         let range = if outline_panel.last_visible_range.is_empty() {
                             0..(outline_panel.entries_with_depths(cx).len() / 4).min(50)
@@ -2009,7 +2053,7 @@ impl OutlinePanel {
     }
 
     fn location_for_editor_selection(
-        &self,
+        &mut self,
         editor: &View<Editor>,
         cx: &mut ViewContext<Self>,
     ) -> Option<EntryOwned> {
@@ -2117,34 +2161,32 @@ impl OutlinePanel {
             .map(|(_, (_, outline))| *outline)
             .cloned();
 
-        let closest_container = match outline_item {
-            Some(outline) => EntryOwned::Outline(buffer_id, excerpt_id, outline),
-            None => self
-                .cached_entries_with_depth
-                .iter()
-                .flatten()
-                .rev()
-                .find_map(|(_, entry)| match entry {
-                    EntryOwned::Excerpt(entry_buffer_id, entry_excerpt_id, _) => {
-                        if entry_buffer_id == &buffer_id && entry_excerpt_id == &excerpt_id {
-                            Some(entry.clone())
-                        } else {
-                            None
+        let closest_container =
+            match outline_item {
+                Some(outline) => EntryOwned::Outline(buffer_id, excerpt_id, outline),
+                None => self.entries_with_depths(cx).iter().rev().find_map(
+                    |(_, entry)| match entry {
+                        EntryOwned::Excerpt(entry_buffer_id, entry_excerpt_id, _) => {
+                            if entry_buffer_id == &buffer_id && entry_excerpt_id == &excerpt_id {
+                                Some(entry.clone())
+                            } else {
+                                None
+                            }
                         }
-                    }
-                    EntryOwned::Entry(
-                        FsEntry::ExternalFile(file_buffer_id, file_excerpts)
-                        | FsEntry::File(_, _, file_buffer_id, file_excerpts),
-                    ) => {
-                        if file_buffer_id == &buffer_id && file_excerpts.contains(&excerpt_id) {
-                            Some(entry.clone())
-                        } else {
-                            None
+                        EntryOwned::Entry(
+                            FsEntry::ExternalFile(file_buffer_id, file_excerpts)
+                            | FsEntry::File(_, _, file_buffer_id, file_excerpts),
+                        ) => {
+                            if file_buffer_id == &buffer_id && file_excerpts.contains(&excerpt_id) {
+                                Some(entry.clone())
+                            } else {
+                                None
+                            }
                         }
-                    }
-                    _ => None,
-                })?,
-        };
+                        _ => None,
+                    },
+                )?,
+            };
         Some(closest_container)
     }
 
@@ -2579,12 +2621,13 @@ impl Render for OutlinePanel {
                 .track_focus(&self.focus_handle)
                 .child(Label::new("No editor outlines available"))
         } else {
-            h_flex()
+            v_flex()
                 .id("outline-panel")
                 .size_full()
                 .relative()
                 .key_context(self.dispatch_context(cx))
                 .on_action(cx.listener(Self::open))
+                .on_action(cx.listener(Self::cancel))
                 .on_action(cx.listener(Self::select_next))
                 .on_action(cx.listener(Self::select_prev))
                 .on_action(cx.listener(Self::select_first))
@@ -2669,6 +2712,11 @@ impl Render for OutlinePanel {
                     )
                     .with_priority(1)
                 }))
+                .child(
+                    v_flex()
+                        .child(div().mx_2().border_primary(cx).border_t_1())
+                        .child(v_flex().p_2().child(self.filter_editor.clone())),
+                )
         }
     }
 }
