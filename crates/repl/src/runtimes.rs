@@ -3,7 +3,7 @@ use futures::{
     channel::mpsc,
     future::Shared,
     stream::{self, StreamExt},
-    SinkExt as _,
+    FutureExt, SinkExt as _,
 };
 use gpui::{AppContext, EntityId, Task};
 use project::Fs;
@@ -85,6 +85,17 @@ pub enum Kernel {
 }
 
 impl Kernel {
+    pub fn dot(&mut self) -> Indicator {
+        match self {
+            Kernel::RunningKernel(kernel) => match kernel.execution_state {
+                ExecutionState::Idle => Indicator::dot().color(Color::Success),
+                ExecutionState::Busy => Indicator::dot().color(Color::Modified),
+            },
+            Kernel::StartingKernel(_) => Indicator::dot().color(Color::Disabled),
+            Kernel::ErroredLaunch(_) => Indicator::dot().color(Color::Error),
+        }
+    }
+
     pub fn set_execution_state(&mut self, status: &ExecutionState) {
         match self {
             Kernel::RunningKernel(running_kernel) => {
